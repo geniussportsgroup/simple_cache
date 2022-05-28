@@ -22,7 +22,7 @@ type SimpleCacheEntry struct {
 	expirationTime time.Time
 	prev           *SimpleCacheEntry
 	next           *SimpleCacheEntry
-	state          int8 // AVAILABLE or BUSY
+	state          int // AVAILABLE or BUSY
 }
 
 type SimpleCache struct {
@@ -99,6 +99,37 @@ func New(capacity int, capFactor float64, ttl time.Duration,
 	return ret
 }
 
+func (entry *SimpleCacheEntry) hasExpired(currTime time.Time) bool {
+	return entry.expirationTime.Before(currTime)
+}
+
+func (cache *SimpleCache) getMRU() *SimpleCacheEntry {
+
+	ret := cache.head.next
+	if ret != &cache.head {
+		return ret
+	}
+	return nil
+}
+
+func (cache *SimpleCache) getLRU() *SimpleCacheEntry {
+
+	ret := cache.head.prev
+	if ret != &cache.head {
+		return ret
+	}
+	return nil
+}
+
+func (cache *SimpleCache) isEmpty() bool {
+
+	if cache.numEntries == 0 {
+		return false
+	}
+
+	return !cache.getMRU().hasExpired(time.Now())
+}
+
 // Insert entry as the first item of cache (mru)
 func (cache *SimpleCache) insertAsMru(entry *SimpleCacheEntry) {
 	entry.prev = &cache.head
@@ -121,16 +152,16 @@ func (cache *SimpleCache) becomeMru(entry *SimpleCacheEntry) {
 // Rewove the last item in the list (lru); mutex must be taken. The entry becomes AVAILABLE
 func (cache *SimpleCache) evictLruEntry() (*SimpleCacheEntry, error) {
 	entry := cache.head.prev // <-- LRU entry
-	if entry.state == BUSY && time.Now().Before(entry.expirationTime) {
+	if !entry.hasExpired(time.Now()) && entry.state == BUSY {
 		return nil, errors.New("cache is full")
 	}
 	entry.selfDeleteFromLRUList()
+	entry.state = AVAILABLE
 	delete(cache.table, entry.key) // Key evicted
 	return entry, nil
 }
 
-func (cache *SimpleCache) allocateEntry(key string,
-	currTime time.Time) (entry *SimpleCacheEntry, err error) {
+func (cache *SimpleCache) allocateEntry(key string) (entry *SimpleCacheEntry, err error) {
 
 	if cache.numEntries == cache.capacity {
 		entry, err = cache.evictLruEntry()
@@ -144,8 +175,6 @@ func (cache *SimpleCache) allocateEntry(key string,
 
 	cache.insertAsMru(entry)
 	entry.key = key
-	entry.timestamp = currTime
-	entry.expirationTime = currTime.Add(cache.ttl)
 	entry.state = BUSY
 	cache.table[key] = entry
 
@@ -157,8 +186,6 @@ func (cache *SimpleCache) allocateEntry(key string,
 // It could return error if ths stringification of the key fails or if the cache is full
 func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) error {
 
-	defer cache.lock.Unlock()
-
 	stringKey, err := cache.toMapKey(key)
 	if err != nil {
 		return err
@@ -166,24 +193,28 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) err
 
 	currTime := time.Now()
 
+	defer cache.lock.Unlock()
 	cache.lock.Lock()
+
 	entry := cache.table[stringKey]
 	if entry == nil {
-		entry, err = cache.allocateEntry(stringKey, currTime)
+		cache.missCount++
+		entry, err = cache.allocateEntry(stringKey)
 		if err != nil {
 			return err
 		}
 	}
 
+	cache.hitCount++
 	entry.value = value
+	entry.timestamp = currTime
+	entry.expirationTime = currTime.Add(cache.ttl)
 	return nil
 }
 
 // Read Retrieves the associates value to key. Return error if the key stringification fails,
 // the key is not in the cache, or if the key has expired
 func (cache *SimpleCache) Read(key interface{}) (interface{}, error) {
-
-	defer cache.lock.Unlock()
 
 	stringKey, err := cache.toMapKey(key)
 	if err != nil {
@@ -192,21 +223,43 @@ func (cache *SimpleCache) Read(key interface{}) (interface{}, error) {
 
 	currTime := time.Now()
 
+	defer cache.lock.Unlock()
 	cache.lock.Lock()
 
 	entry := cache.table[stringKey]
 	if entry == nil {
+		cache.missCount++
 		return nil, fmt.Errorf("stringficated key %s not found", stringKey)
 	}
 
-	if entry.expirationTime.Before(currTime) {
-		return nil, fmt.Errorf("stringficated key %s found but ttl expired", stringKey)
+	if entry.hasExpired(currTime) {
+		cache.missCount++
+		return entry.value, fmt.Errorf("stringficated key %s found but ttl expired", stringKey)
 	}
 
+	cache.hitCount++
 	entry.expirationTime = currTime.Add(cache.ttl)
 	cache.becomeMru(entry)
 
 	return entry.value, nil
+}
+
+// GetMRU Return the most recently used entry in the cache. The method do not refresh the entry
+func (cache *SimpleCache) GetMRU() (string, interface{}, error) {
+
+	defer cache.lock.Unlock()
+	cache.lock.Lock()
+
+	if cache.numEntries == 0 {
+		return "", nil, errors.New("empty cache")
+	}
+
+	entry := cache.getMRU()
+	if entry.hasExpired(time.Now()) || entry.state == AVAILABLE {
+		return entry.key, entry.value, errors.New("MRU entry has expired")
+	}
+
+	return entry.key, entry.value, nil
 }
 
 // SimpleCacheIt Iterator on cache entries. Go from MUR to LRU
@@ -280,8 +333,7 @@ func (cache *SimpleCache) clean() error {
 	return nil
 }
 
-// Clean Try to clean the cache. All the entries are deleted and counters reset. Fails if any entry is in COMPUTING
-// state.
+// Clean Clean the cache. All the entries are deleted and counters reset.
 //
 // Uses internal lock
 //
