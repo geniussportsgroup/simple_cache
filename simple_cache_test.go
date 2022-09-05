@@ -10,19 +10,21 @@ import (
 
 const Capacity = 100
 const Factor = 0.2
-const TTL = 2 // in seconds
+const TTL = 2 * time.Second
 
 func TestSimpleCache(t *testing.T) {
 
-	ttl, _ := time.ParseDuration(fmt.Sprintf("%ds", TTL))
+	ttl := TTL
+	fmt.Printf("ttl = %s\n", ttl)
 
 	cache := New(Capacity, Factor, ttl, func(key interface{}) (string, error) {
 		return strconv.Itoa(key.(int)), nil
 	})
 
 	for i := 0; i < Capacity; i++ {
-		err := cache.InsertOrUpdate(i, i)
+		entry, err := cache.InsertOrUpdate(i, i)
 		assert.Nil(t, err)
+		assert.Equal(t, entry.(int), i)
 	}
 
 	for it := cache.NewCacheIt(); it.HasCurr(); it.Next() {
@@ -47,6 +49,8 @@ func TestSimpleCache(t *testing.T) {
 	assert.Equal(t, key, strconv.Itoa(Capacity/2))
 	assert.Equal(t, mruValue.(int), Capacity/2)
 
+	fmt.Printf("Wait for ttl = %s\n", ttl)
+
 	time.Sleep(ttl) // I need to test that TTL works
 
 	value, err = cache.Read(Capacity / 2)
@@ -59,8 +63,9 @@ func TestSimpleCache(t *testing.T) {
 	}
 
 	for i := 0; i < Capacity; i++ {
-		err = cache.InsertOrUpdate(i, i)
+		entry, err := cache.InsertOrUpdate(i, i)
 		assert.Nil(t, err)
+		assert.Equal(t, entry.(int), i)
 	}
 
 	value, err = cache.Read(Capacity - 1)
@@ -80,16 +85,20 @@ func TestSimpleCache(t *testing.T) {
 
 	assert.Equal(t, cache.NumEntries(), Capacity)
 
-	halfTtl, err := time.ParseDuration(fmt.Sprintf("%ds", TTL/2))
-	time.Sleep(halfTtl)
+	elapsedTime := ttl
+	fmt.Printf("wait for %s\n", elapsedTime)
+	time.Sleep(elapsedTime)
 
-	err = cache.InsertOrUpdate(Capacity, Capacity)
-	assert.NotNil(t, err)
-
-	time.Sleep(halfTtl) // after elapsing one more half ttl I should be able to insert a new entry
-
-	err = cache.InsertOrUpdate(Capacity, Capacity)
+	entry, err := cache.InsertOrUpdate(Capacity, Capacity)
 	assert.Nil(t, err)
+	assert.Equal(t, entry.(int), Capacity)
+
+	fmt.Printf("wait for %s\n", elapsedTime)
+	time.Sleep(elapsedTime) // after elapsing one more half ttl I should be able to insert a new entry
+
+	entry, err = cache.InsertOrUpdate(Capacity, Capacity)
+	assert.Nil(t, err)
+	assert.Equal(t, entry.(int), Capacity)
 
 	key, mruValue, err = cache.GetMRU()
 	assert.Nil(t, err)
