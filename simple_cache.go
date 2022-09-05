@@ -70,7 +70,7 @@ func (cache *SimpleCache) NumEntries() int {
 //
 // capFactor is a number in (0.1, 3] that indicates how long the cache should be oversize in order to avoid rehashing
 //
-// ttl: time to live of a cache entry
+// ttl: time to live of a cache entry in seconds
 //
 // toMapKey is a function in charge of transforming the request into a string
 //
@@ -184,11 +184,11 @@ func (cache *SimpleCache) allocateEntry(key string) (entry *SimpleCacheEntry, er
 // InsertOrUpdate Insert into the cache the pair key,value. If the cache already contains the
 // key, then the associated value is updated.
 // It could return error if ths stringification of the key fails or if the cache is full
-func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) error {
+func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (interface{}, error) {
 
 	stringKey, err := cache.toMapKey(key)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	currTime := time.Now()
@@ -201,7 +201,7 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) err
 		cache.missCount++
 		entry, err = cache.allocateEntry(stringKey)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
@@ -209,7 +209,7 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) err
 	entry.value = value
 	entry.timestamp = currTime
 	entry.expirationTime = currTime.Add(cache.ttl)
-	return nil
+	return entry.value, nil
 }
 
 // Read Retrieves the associates value to key. Return error if the key stringification fails,
