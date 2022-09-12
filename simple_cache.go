@@ -184,11 +184,11 @@ func (cache *SimpleCache) allocateEntry(key string) (entry *SimpleCacheEntry, er
 // InsertOrUpdate Insert into the cache the pair key,value. If the cache already contains the
 // key, then the associated value is updated.
 // It could return error if ths stringification of the key fails or if the cache is full
-func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (interface{}, error) {
+func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (interface{}, error, bool) {
 
 	stringKey, err := cache.toMapKey(key)
 	if err != nil {
-		return nil, err
+		return nil, err, false
 	}
 
 	currTime := time.Now()
@@ -196,20 +196,22 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (in
 	defer cache.lock.Unlock()
 	cache.lock.Lock()
 
+	isInsertion := false
 	entry := cache.table[stringKey]
 	if entry == nil {
 		cache.missCount++
 		entry, err = cache.allocateEntry(stringKey)
 		if err != nil {
-			return nil, err
+			return nil, err, false
 		}
+		isInsertion = true
 	}
 
 	cache.hitCount++
 	entry.value = value
 	entry.timestamp = currTime
 	entry.expirationTime = currTime.Add(cache.ttl)
-	return entry.value, nil
+	return entry.value, nil, isInsertion
 }
 
 // Read Retrieves the associates value to key. Return error if the key stringification fails,
