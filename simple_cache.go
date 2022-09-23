@@ -152,9 +152,6 @@ func (cache *SimpleCache) becomeMru(entry *SimpleCacheEntry) {
 // Rewove the last item in the list (lru); mutex must be taken. The entry becomes AVAILABLE
 func (cache *SimpleCache) evictLruEntry() (*SimpleCacheEntry, error) {
 	entry := cache.head.prev // <-- LRU entry
-	if !entry.hasExpired(time.Now()) && entry.state == BUSY {
-		return nil, errors.New("cache is full")
-	}
 	entry.selfDeleteFromLRUList()
 	entry.state = AVAILABLE
 	delete(cache.table, entry.key) // Key evicted
