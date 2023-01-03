@@ -203,9 +203,10 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (in
 		if err != nil {
 			return nil, err
 		}
+	} else {
+		cache.hitCount++
 	}
 
-	cache.hitCount++
 	entry.value = value
 	entry.timestamp = currTime
 	entry.expirationTime = currTime.Add(cache.ttl)
