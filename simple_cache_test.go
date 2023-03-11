@@ -108,13 +108,13 @@ func TestSimpleCache(t *testing.T) {
 }
 
 type ValueType struct {
-	num  int
-	text string
+	Num  int
+	Text string
 }
 
 func TestCompress(t *testing.T) {
 
-	cache := NewWithCompression(Capacity, Factor, TTL,
+	cache := NewWithCompression(Capacity, Factor, 5*time.Hour,
 		func(key interface{}) (string, error) {
 			return strconv.Itoa(key.(int)), nil
 		}, func(value interface{}) ([]byte, error) {
@@ -136,10 +136,11 @@ func TestCompress(t *testing.T) {
 
 	for i := 0; i < Capacity; i++ {
 		str := fmt.Sprintf("This is the %d-th string", i)
-		cache.InsertOrUpdate(i, &ValueType{
-			num:  i,
-			text: str,
+		_, err := cache.InsertOrUpdate(i, &ValueType{
+			Num:  i,
+			Text: str,
 		})
+		assert.NoError(t, err)
 	}
 
 	for i := 0; i < Capacity; i++ {
@@ -148,5 +149,6 @@ func TestCompress(t *testing.T) {
 		assert.NoError(t, err)
 		value := inter.(*ValueType)
 		assert.NotNil(t, value)
+		assert.Equal(t, expStr, value.Text)
 	}
 }
