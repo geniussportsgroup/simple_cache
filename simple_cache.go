@@ -1,9 +1,12 @@
 package simple_cache
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pierrec/lz4"
+	"io"
 	"math"
 	"sync"
 	"time"
@@ -36,8 +39,10 @@ type SimpleCache struct {
 	capacity         int
 	extendedCapacity int
 	numEntries       int
-
-	toMapKey func(key interface{}) (string, error)
+	toCompress       bool
+	toMapKey         func(key interface{}) (string, error)
+	valueToBytes     func(value interface{}) ([]byte, error)
+	bytesToValue     func([]byte) (interface{}, error)
 }
 
 func (cache *SimpleCache) MissCount() int {
@@ -97,6 +102,22 @@ func New(capacity int, capFactor float64, ttl time.Duration,
 	ret.head.next = &ret.head
 
 	return ret
+}
+
+func NewWithCompression(capacity int, capFactor float64, ttl time.Duration,
+	toMapKey func(key interface{}) (string, error),
+	valueToBytes func(value interface{}) ([]byte, error),
+	bytesToValue func([]byte) (interface{}, error),
+) *SimpleCache {
+
+	cache := New(capacity, capFactor, ttl, toMapKey)
+	if cache != nil {
+		cache.toCompress = true
+		cache.valueToBytes = valueToBytes
+		cache.bytesToValue = bytesToValue
+	}
+
+	return cache
 }
 
 func (entry *SimpleCacheEntry) hasExpired(currTime time.Time) bool {
@@ -205,8 +226,20 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (in
 		}
 	}
 
+	if cache.toCompress {
+		buf, err := cache.valueToBytes(value)
+		if err != nil {
+			return nil, err
+		}
+		entry.value, err = lz4Compress(buf)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		entry.value = value
+	}
+
 	cache.hitCount++
-	entry.value = value
 	entry.timestamp = currTime
 	entry.expirationTime = currTime.Add(cache.ttl)
 	return entry.value, nil
@@ -214,9 +247,10 @@ func (cache *SimpleCache) InsertOrUpdate(key interface{}, value interface{}) (in
 
 // Read Retrieves the associates value to key. Return error if the key stringification fails,
 // the key is not in the cache, or if the key has expired
-func (cache *SimpleCache) Read(key interface{}) (interface{}, error) {
+func (cache *SimpleCache) Read(key interface{}) (value interface{}, err error) {
 
-	stringKey, err := cache.toMapKey(key)
+	var stringKey string
+	stringKey, err = cache.toMapKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +275,22 @@ func (cache *SimpleCache) Read(key interface{}) (interface{}, error) {
 	entry.expirationTime = currTime.Add(cache.ttl)
 	cache.becomeMru(entry)
 
-	return entry.value, nil
+	if cache.toCompress {
+		var buf []byte
+		buf, err = lz4Decompress(entry.value.([]byte))
+		if err != nil {
+			return nil, err
+		}
+
+		value, err = cache.bytesToValue(buf)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		value = entry.value
+	}
+
+	return value, nil
 }
 
 // GetMRU Return the most recently used entry in the cache. The method do not refresh the entry
@@ -333,7 +382,7 @@ func (cache *SimpleCache) clean() error {
 	return nil
 }
 
-// Clean Clean the cache. All the entries are deleted and counters reset.
+// Clean the cache. All the entries are deleted and counters reset.
 //
 // Uses internal lock
 //
@@ -343,4 +392,30 @@ func (cache *SimpleCache) Clean() error {
 	defer cache.lock.Unlock()
 
 	return cache.clean()
+}
+
+func lz4Compress(in []byte) ([]byte, error) {
+	r := bytes.NewReader(in)
+	w := &bytes.Buffer{}
+	zw := lz4.NewWriter(w)
+	_, err := io.Copy(zw, r)
+	if err != nil {
+		return nil, err
+	}
+	// Closing is *very* important
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return w.Bytes(), nil
+}
+
+func lz4Decompress(in []byte) ([]byte, error) {
+	r := bytes.NewReader(in)
+	w := &bytes.Buffer{}
+	zr := lz4.NewReader(r)
+	_, err := io.Copy(w, zr)
+	if err != nil {
+		return nil, err
+	}
+	return w.Bytes(), nil
 }
