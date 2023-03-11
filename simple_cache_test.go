@@ -1,6 +1,7 @@
 package simple_cache
 
 import (
+	"encoding/json"
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"strconv"
@@ -104,4 +105,50 @@ func TestSimpleCache(t *testing.T) {
 	assert.Nil(t, err)
 	assert.Equal(t, key, strconv.Itoa(Capacity))
 	assert.Equal(t, mruValue.(int), Capacity)
+}
+
+type ValueType struct {
+	Num  int
+	Text string
+}
+
+func TestCompress(t *testing.T) {
+
+	cache := NewWithCompression(Capacity, Factor, 5*time.Hour,
+		func(key interface{}) (string, error) {
+			return strconv.Itoa(key.(int)), nil
+		}, func(value interface{}) ([]byte, error) {
+			content := value.(*ValueType)
+			b, err := json.Marshal(content)
+			if err != nil {
+				return nil, err
+			}
+			return b, nil
+		},
+		func(buf []byte) (interface{}, error) {
+			value := &ValueType{}
+			err := json.Unmarshal(buf, value)
+			if err != nil {
+				return nil, err
+			}
+			return value, nil
+		})
+
+	for i := 0; i < Capacity; i++ {
+		str := fmt.Sprintf("This is the %d-th string", i)
+		_, err := cache.InsertOrUpdate(i, &ValueType{
+			Num:  i,
+			Text: str,
+		})
+		assert.NoError(t, err)
+	}
+
+	for i := 0; i < Capacity; i++ {
+		expStr := fmt.Sprintf("This is the %d-th string", i)
+		inter, err := cache.Read(i)
+		assert.NoError(t, err)
+		value := inter.(*ValueType)
+		assert.NotNil(t, value)
+		assert.Equal(t, expStr, value.Text)
+	}
 }
